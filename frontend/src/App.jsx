@@ -369,7 +369,7 @@ function viewTitle(activeView) {
 function Sidebar({ activeView, setActiveView }) {
   const items = [
     { id: "dashboard", label: "Panel", icon: LayoutDashboard },
-    { id: "cashbook", label: "Libro de caja", icon: BookOpen },
+    { id: "cashbook", label: "Movimientos", icon: BookOpen },
     { id: "counterparties", label: "Nombres y empresas", icon: Users },
     { id: "concepts", label: "Conceptos", icon: Tags },
   ];
@@ -452,12 +452,26 @@ function Cashbook(props) {
             <h2>{props.editingId ? "Editar movimiento" : "Nuevo movimiento"}</h2>
             <p>Saldo efectivo: {formatMoney(props.balances.cash?.balance)}</p>
           </div>
-          {props.editingId && (
-            <button className="ghost-button" type="button" onClick={props.cancelEdit}>
-              <X size={18} />
-              Cancelar
+          <div className="report-actions movement-actions">
+            <button className="ghost-button" type="button" disabled title="Pendiente de configurar">
+              <Printer size={18} />
+              Imprimir
             </button>
-          )}
+            <button className="primary-button" type="button" disabled title="Pendiente de configurar">
+              <FileDown size={18} />
+              Exportar PDF
+            </button>
+            <button className="primary-button" type="button" disabled title="Pendiente de configurar">
+              <Mail size={18} />
+              Enviar email
+            </button>
+            {props.editingId && (
+              <button className="ghost-button" type="button" onClick={props.cancelEdit}>
+                <X size={18} />
+                Cancelar
+              </button>
+            )}
+          </div>
         </div>
 
         <TransactionForm
@@ -529,27 +543,27 @@ function TransactionForm({
 }) {
   return (
     <form className="transaction-form" onSubmit={saveTransaction}>
-      <div className="segmented" aria-label="Tipo de movimiento">
-        <button
-          className={form.type === "income" ? "selected" : ""}
-          type="button"
-          onClick={() => updateForm("type", "income")}
-        >
-          <ArrowUpCircle size={18} />
-          Entrada
-        </button>
-        <button
-          className={form.type === "expense" ? "selected" : ""}
-          type="button"
-          onClick={() => updateForm("type", "expense")}
-        >
-          <ArrowDownCircle size={18} />
-          Retirada
-        </button>
-      </div>
-
       <div className="form-grid">
-        <label>
+        <div className="segmented movement-type-field" aria-label="Tipo de movimiento">
+          <button
+            className={form.type === "income" ? "selected" : ""}
+            type="button"
+            onClick={() => updateForm("type", "income")}
+          >
+            <ArrowUpCircle size={18} />
+            Entrada
+          </button>
+          <button
+            className={form.type === "expense" ? "selected" : ""}
+            type="button"
+            onClick={() => updateForm("type", "expense")}
+          >
+            <ArrowDownCircle size={18} />
+            Retirada
+          </button>
+        </div>
+
+        <label className="movement-compact-field">
           Cuenta
           <select value={form.account_code} onChange={(event) => updateForm("account_code", event.target.value)}>
             {accounts.map((account) => (
@@ -560,7 +574,7 @@ function TransactionForm({
           </select>
         </label>
 
-        <label>
+        <label className="movement-compact-field">
           Fecha
           <input
             type="date"
@@ -570,7 +584,18 @@ function TransactionForm({
           />
         </label>
 
-        <label>
+        <label className="movement-compact-field">
+          Cantidad
+          <input
+            type="text"
+            inputMode="decimal"
+            value={form.amount}
+            onChange={(event) => updateForm("amount", event.target.value)}
+            required
+          />
+        </label>
+
+        <label className="movement-wide-field">
           Nombre o empresa
           <input
             list="counterparties-list"
@@ -585,7 +610,7 @@ function TransactionForm({
           </datalist>
         </label>
 
-        <label>
+        <label className="movement-wide-field">
           Concepto
           <input
             list="concepts-list"
@@ -598,17 +623,6 @@ function TransactionForm({
               <option key={item.id} value={item.name} />
             ))}
           </datalist>
-        </label>
-
-        <label>
-          Cantidad
-          <input
-            type="text"
-            inputMode="decimal"
-            value={form.amount}
-            onChange={(event) => updateForm("amount", event.target.value)}
-            required
-          />
         </label>
 
         <label className="full-field">
