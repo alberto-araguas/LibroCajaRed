@@ -1,4 +1,17 @@
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+const TOKEN_KEY = "cashbook_token";
+
+export function getStoredToken() {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setStoredToken(token) {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearStoredToken() {
+  localStorage.removeItem(TOKEN_KEY);
+}
 
 function buildQuery(params = {}) {
   const query = new URLSearchParams();
@@ -12,9 +25,11 @@ function buildQuery(params = {}) {
 }
 
 async function request(path, options = {}) {
+  const token = getStoredToken();
   const response = await fetch(`${API_URL}${path}`, {
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },
     ...options,
@@ -28,13 +43,54 @@ async function request(path, options = {}) {
 
   if (!response.ok) {
     const detail = data?.detail;
-    throw new Error(typeof detail === "string" ? detail : "No se pudo completar la operación.");
+    const error = new Error(typeof detail === "string" ? detail : "No se pudo completar la operación.");
+    error.status = response.status;
+    throw error;
   }
 
   return data;
 }
 
+async function requestBlob(path, options = {}) {
+  const token = getStoredToken();
+  const response = await fetch(`${API_URL}${path}`, {
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options.headers,
+    },
+    ...options,
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    const detail = data?.detail;
+    const error = new Error(typeof detail === "string" ? detail : "No se pudo completar la operación.");
+    error.status = response.status;
+    throw error;
+  }
+
+  return response.blob();
+}
+
 export const api = {
+  login: (payload) =>
+    request("/auth/login", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  me: () => request("/auth/me"),
+  users: (params) => request(`/users${buildQuery(params)}`),
+  movementUserLookup: (transactionId) => request(`/users/movement-lookup/${transactionId}`),
+  createUser: (payload) =>
+    request("/users", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateUser: (id, payload) =>
+    request(`/users/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
   accounts: () => request("/accounts"),
   balances: () => request("/accounts/balances"),
   transactions: (filters) => request(`/transactions${buildQuery(filters)}`),
@@ -88,7 +144,10 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   cashbookPdfUrl: (filters) => `${API_URL}/reports/cashbook/pdf${buildQuery(filters)}`,
+  cashbookPdf: (filters) => requestBlob(`/reports/cashbook/pdf${buildQuery(filters)}`),
   movementPdfUrl: (transactionId, params) => `${API_URL}/reports/movements/${transactionId}/pdf${buildQuery(params)}`,
+  movementPdf: (transactionId, params) =>
+    requestBlob(`/reports/movements/${transactionId}/pdf${buildQuery(params)}`),
   emailMovementReport: (transactionId, payload) =>
     request(`/reports/movements/${transactionId}/email`, {
       method: "POST",

@@ -20,6 +20,11 @@ class Settings(BaseSettings):
         "Información tratada conforme a la normativa vigente de protección de datos. "
         "Este documento es confidencial y está destinado únicamente a su receptor."
     )
+    auth_secret: str = "change-this-secret"
+    auth_token_expire_minutes: int = 720
+    initial_admin_username: str = "admin"
+    initial_admin_password: str = "admin123"
+    initial_admin_full_name: str = "Administrador"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

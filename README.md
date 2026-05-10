@@ -70,6 +70,17 @@ La fase 8 anade:
 - Validacion de build del frontend.
 - Documentacion de instalacion, configuracion y comprobaciones.
 
+La fase 9 anade:
+
+- Acceso con usuario y contrasena.
+- Creacion automatica del primer usuario administrador.
+- Tokens de sesion para proteger la API.
+- Boton inferior de Configuracion visible solo para administradores.
+- Pantalla de Configuracion con alta de usuarios.
+- Edicion de usuarios y cambio de contrasena desde Configuracion.
+- Registro del usuario que crea cada movimiento.
+- Busqueda admin para saber que usuario realizo un movimiento concreto.
+
 ## Arranque
 
 ```bash
@@ -102,7 +113,9 @@ docker compose exec -T frontend npm run build
 Comprobaciones manuales recomendadas:
 
 - Abrir http://localhost:5173.
+- Entrar con el usuario administrador inicial.
 - Crear una entrada en efectivo.
+- Buscar en Configuracion el numero de ese movimiento para comprobar el usuario asociado.
 - Crear una retirada en tarjeta.
 - Confirmar que los saldos cambian.
 - Filtrar el libro de caja.
@@ -112,8 +125,13 @@ Comprobaciones manuales recomendadas:
 ## Ejemplo de movimiento
 
 ```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123"}' | jq -r .access_token)
+
 curl -X POST http://localhost:8000/transactions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{
     "account_code": "cash",
     "counterparty_name": "Cliente ejemplo",
@@ -127,8 +145,8 @@ curl -X POST http://localhost:8000/transactions \
 ## Busquedas para autocompletado
 
 ```bash
-curl "http://localhost:8000/counterparties?q=cliente"
-curl "http://localhost:8000/concepts?q=venta"
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/counterparties?q=cliente"
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/concepts?q=venta"
 ```
 
 ## Ejemplo de nombre o empresa
@@ -136,6 +154,7 @@ curl "http://localhost:8000/concepts?q=venta"
 ```bash
 curl -X POST http://localhost:8000/counterparties \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{
     "name": "Empresa ejemplo",
     "dni_cif": "B12345678",
@@ -148,7 +167,9 @@ curl -X POST http://localhost:8000/counterparties \
 ## Exportar PDF
 
 ```bash
-curl -o libro-de-caja.pdf "http://localhost:8000/reports/cashbook/pdf?account_code=cash"
+curl -H "Authorization: Bearer $TOKEN" \
+  -o libro-de-caja.pdf \
+  "http://localhost:8000/reports/cashbook/pdf?account_code=cash"
 ```
 
 ## Enviar informe por email
@@ -156,6 +177,7 @@ curl -o libro-de-caja.pdf "http://localhost:8000/reports/cashbook/pdf?account_co
 ```bash
 curl -X POST http://localhost:8000/reports/cashbook/email \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{
     "recipient": "destino@empresa.com",
     "subject": "Libro de caja",
@@ -169,6 +191,18 @@ curl -X POST http://localhost:8000/reports/cashbook/email \
 ## Configuracion
 
 Copia `.env.example` a `.env` si quieres personalizar puertos, credenciales o configuracion SMTP.
+
+Credenciales iniciales de acceso:
+
+```text
+INITIAL_ADMIN_USERNAME=admin
+INITIAL_ADMIN_PASSWORD=admin123
+INITIAL_ADMIN_FULL_NAME=Administrador
+AUTH_SECRET=change_this_secret
+AUTH_TOKEN_EXPIRE_MINUTES=720
+```
+
+Cambia `INITIAL_ADMIN_PASSWORD` y `AUTH_SECRET` antes de usar la aplicacion con datos reales.
 
 Para Microsoft 365 / Office 365 usa:
 

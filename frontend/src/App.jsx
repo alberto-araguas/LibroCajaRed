@@ -13,14 +13,16 @@ import {
   RefreshCw,
   Save,
   Search,
+  Settings,
   Sun,
   Tags,
   Trash2,
   Users,
   X,
+  LogOut,
 } from "lucide-react";
 
-import { api } from "./services/api";
+import { api, clearStoredToken, getStoredToken, setStoredToken } from "./services/api";
 import "./styles.css";
 
 const today = new Date().toISOString().slice(0, 10);
@@ -62,9 +64,29 @@ function formatDate(value) {
   return new Intl.DateTimeFormat("es-ES").format(new Date(`${value}T00:00:00`));
 }
 
+function openBlob(blob) {
+  const url = URL.createObjectURL(blob);
+  window.open(url, "_blank", "noopener,noreferrer");
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
 function App() {
   const [activeView, setActiveView] = useState("dashboard");
   const [theme, setTheme] = useState(() => localStorage.getItem("theme") ?? "light");
+  const [authUser, setAuthUser] = useState(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [accounts, setAccounts] = useState([]);
   const [balances, setBalances] = useState({});
   const [transactions, setTransactions] = useState([]);
@@ -99,10 +121,66 @@ function App() {
   }, [theme]);
 
   useEffect(() => {
-    loadData();
+    restoreSession();
   }, []);
 
+  useEffect(() => {
+    if (authUser) {
+      loadData();
+    }
+  }, [authUser]);
+
+  async function restoreSession() {
+    const token = getStoredToken();
+    if (!token) {
+      setIsAuthLoading(false);
+      setIsLoading(false);
+      return;
+    }
+    try {
+      const user = await api.me();
+      setAuthUser(user);
+    } catch {
+      clearStoredToken();
+      setAuthUser(null);
+      setIsLoading(false);
+    } finally {
+      setIsAuthLoading(false);
+    }
+  }
+
+  async function loginUser(credentials) {
+    setIsLoggingIn(true);
+    setError("");
+    try {
+      const session = await api.login(credentials);
+      setStoredToken(session.access_token);
+      setAuthUser(session.user);
+      setActiveView("dashboard");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsLoggingIn(false);
+    }
+  }
+
+  function logoutUser() {
+    clearStoredToken();
+    setAuthUser(null);
+    setActiveView("dashboard");
+    setAccounts([]);
+    setBalances({});
+    setTransactions([]);
+    setCounterparties([]);
+    setConcepts([]);
+    setNotice("");
+    setError("");
+  }
+
   async function loadData(nextFilters = filters) {
+    if (!getStoredToken()) {
+      return;
+    }
     setIsLoading(true);
     setError("");
     try {
@@ -120,6 +198,10 @@ function App() {
       setCounterparties(counterpartiesData);
       setConcepts(conceptsData);
     } catch (err) {
+      if (err.status === 401) {
+        logoutUser();
+        return;
+      }
       setError(err.message);
     } finally {
       setIsLoading(false);
@@ -244,16 +326,28 @@ function App() {
     window.setTimeout(() => window.print(), 100);
   }
 
-  function exportCashbookPdf() {
-    window.open(api.cashbookPdfUrl(filters), "_blank", "noopener,noreferrer");
+  async function exportCashbookPdf() {
+    try {
+      downloadBlob(await api.cashbookPdf(filters), "libro-de-caja.pdf");
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
-  function printMovementReport(transactionId) {
-    window.open(api.movementPdfUrl(transactionId, { download: false }), "_blank", "noopener,noreferrer");
+  async function printMovementReport(transactionId) {
+    try {
+      openBlob(await api.movementPdf(transactionId, { download: false }));
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
-  function exportMovementPdf(transactionId) {
-    window.open(api.movementPdfUrl(transactionId), "_blank", "noopener,noreferrer");
+  async function exportMovementPdf(transactionId) {
+    try {
+      downloadBlob(await api.movementPdf(transactionId), `movimiento-${transactionId}.pdf`);
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   function openCashbookEmailDialog() {
@@ -307,8 +401,20 @@ function App() {
   }
 
   return (
+    <>
+      {isAuthLoading ? (
+        <div className="auth-shell">
+          <div className="login-panel">
+            <div className="brand-mark">LC</div>
+            <h1>Libro Caja</h1>
+            <p>Cargando sesión...</p>
+          </div>
+        </div>
+      ) : !authUser ? (
+        <LoginScreen error={error} isLoggingIn={isLoggingIn} loginUser={loginUser} />
+      ) : (
     <div className="app-layout">
-      <Sidebar activeView={activeView} setActiveView={setActiveView} />
+      <Sidebar activeView={activeView} setActiveView={setActiveView} currentUser={authUser} logoutUser={logoutUser} />
 
       <main className="main-area">
         <header className="topbar">
@@ -403,6 +509,10 @@ function App() {
           />
         )}
 
+        {activeView === "settings" && authUser.is_admin && (
+          <SettingsView />
+        )}
+
         {emailDialogOpen && (
           <EmailDialog
             emailForm={emailForm}
@@ -415,6 +525,8 @@ function App() {
         )}
       </main>
     </div>
+      )}
+    </>
   );
 }
 
@@ -424,17 +536,19 @@ function viewTitle(activeView) {
     cashbook: "Movimientos",
     counterparties: "Nombres y empresas",
     concepts: "Conceptos",
+    settings: "Configuración",
   };
   return titles[activeView];
 }
 
-function Sidebar({ activeView, setActiveView }) {
+function Sidebar({ activeView, setActiveView, currentUser, logoutUser }) {
   const items = [
     { id: "dashboard", label: "Panel", icon: LayoutDashboard },
     { id: "cashbook", label: "Movimientos", icon: BookOpen },
     { id: "counterparties", label: "Nombres y empresas", icon: Users },
     { id: "concepts", label: "Conceptos", icon: Tags },
   ];
+  const adminItems = currentUser.is_admin ? [{ id: "settings", label: "Configuración", icon: Settings }] : [];
 
   return (
     <aside className="sidebar">
@@ -461,7 +575,77 @@ function Sidebar({ activeView, setActiveView }) {
           );
         })}
       </nav>
+      <div className="sidebar-footer">
+        {adminItems.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.id}
+              className={activeView === item.id ? "active footer-action" : "footer-action"}
+              type="button"
+              onClick={() => setActiveView(item.id)}
+            >
+              <Icon size={18} />
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+        <div className="user-chip">
+          <strong>{currentUser.full_name || currentUser.username}</strong>
+          <span>{currentUser.is_admin ? "Administrador" : "Usuario"}</span>
+        </div>
+        <button className="footer-action" type="button" onClick={logoutUser}>
+          <LogOut size={18} />
+          <span>Salir</span>
+        </button>
+      </div>
     </aside>
+  );
+}
+
+function LoginScreen({ error, isLoggingIn, loginUser }) {
+  const [credentials, setCredentials] = useState({ username: "", password: "" });
+
+  function updateField(field, value) {
+    setCredentials((current) => ({ ...current, [field]: value }));
+  }
+
+  function submit(event) {
+    event.preventDefault();
+    loginUser(credentials);
+  }
+
+  return (
+    <div className="auth-shell">
+      <form className="login-panel" onSubmit={submit}>
+        <div className="brand-mark">LC</div>
+        <div>
+          <p className="section-kicker">Acceso privado</p>
+          <h1>Libro Caja</h1>
+        </div>
+        {error && (
+          <div className="alert alert-error" role="alert">
+            {error}
+          </div>
+        )}
+        <label>
+          Usuario
+          <input value={credentials.username} onChange={(event) => updateField("username", event.target.value)} required />
+        </label>
+        <label>
+          Contraseña
+          <input
+            type="password"
+            value={credentials.password}
+            onChange={(event) => updateField("password", event.target.value)}
+            required
+          />
+        </label>
+        <button className="primary-button" type="submit" disabled={isLoggingIn}>
+          {isLoggingIn ? "Entrando..." : "Entrar"}
+        </button>
+      </form>
+    </div>
   );
 }
 
@@ -1233,6 +1417,271 @@ function ReferenceManager({ title, singular, items, createItem, updateItem, dele
         ))}
       </div>
     </section>
+  );
+}
+
+const emptyUserForm = {
+  username: "",
+  password: "",
+  full_name: "",
+  is_admin: false,
+  is_active: true,
+};
+
+function SettingsView() {
+  const [users, setUsers] = useState([]);
+  const [form, setForm] = useState(emptyUserForm);
+  const [editingUser, setEditingUser] = useState(null);
+  const [movementSearchId, setMovementSearchId] = useState("");
+  const [movementLookup, setMovementLookup] = useState(null);
+  const [isLoadingUsers, setIsLoadingUsers] = useState(true);
+  const [isCreatingUser, setIsCreatingUser] = useState(false);
+  const [isSearchingMovement, setIsSearchingMovement] = useState(false);
+  const [localError, setLocalError] = useState("");
+  const [localNotice, setLocalNotice] = useState("");
+
+  useEffect(() => {
+    loadUsers();
+  }, []);
+
+  async function loadUsers() {
+    setIsLoadingUsers(true);
+    setLocalError("");
+    try {
+      setUsers(await api.users({ limit: 500 }));
+    } catch (err) {
+      setLocalError(err.message);
+    } finally {
+      setIsLoadingUsers(false);
+    }
+  }
+
+  function updateField(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function startEditUser(user) {
+    setEditingUser(user);
+    setForm({
+      username: user.username,
+      password: "",
+      full_name: user.full_name || "",
+      is_admin: user.is_admin,
+      is_active: user.is_active,
+    });
+    setLocalError("");
+    setLocalNotice("");
+  }
+
+  function cancelUserEdit() {
+    setEditingUser(null);
+    setForm(emptyUserForm);
+    setLocalError("");
+  }
+
+  async function saveUser(event) {
+    event.preventDefault();
+    setIsCreatingUser(true);
+    setLocalError("");
+    setLocalNotice("");
+    try {
+      if (!editingUser && !form.password.trim()) {
+        setLocalError("Indica una contraseña para el nuevo usuario.");
+        return;
+      }
+
+      const payload = {
+        username: form.username.trim(),
+        full_name: form.full_name.trim() || null,
+        is_admin: form.is_admin,
+        is_active: form.is_active,
+      };
+      if (form.password.trim()) {
+        payload.password = form.password;
+      }
+
+      if (editingUser) {
+        await api.updateUser(editingUser.id, payload);
+        setEditingUser(null);
+        setLocalNotice("Usuario actualizado.");
+      } else {
+        await api.createUser({
+          ...payload,
+          password: form.password,
+        });
+        setLocalNotice("Usuario creado.");
+      }
+      setForm(emptyUserForm);
+      await loadUsers();
+    } catch (err) {
+      setLocalError(err.message);
+    } finally {
+      setIsCreatingUser(false);
+    }
+  }
+
+  async function searchMovementUser(event) {
+    event.preventDefault();
+    setIsSearchingMovement(true);
+    setMovementLookup(null);
+    setLocalError("");
+    setLocalNotice("");
+    try {
+      setMovementLookup(await api.movementUserLookup(movementSearchId.trim()));
+    } catch (err) {
+      setLocalError(err.message);
+    } finally {
+      setIsSearchingMovement(false);
+    }
+  }
+
+  return (
+    <div className="content-grid">
+      <section className="panel-block">
+        <div className="block-heading">
+          <div>
+            <h2>Buscar usuario por movimiento</h2>
+            <p>Consulta reservada para administradores</p>
+          </div>
+        </div>
+
+        <form className="movement-user-search" onSubmit={searchMovementUser}>
+          <label>
+            Nº de movimiento
+            <input
+              inputMode="numeric"
+              min="1"
+              type="number"
+              value={movementSearchId}
+              onChange={(event) => setMovementSearchId(event.target.value)}
+              required
+            />
+          </label>
+          <button className="primary-button" type="submit" disabled={isSearchingMovement}>
+            <Search size={18} />
+            {isSearchingMovement ? "Buscando..." : "Buscar"}
+          </button>
+        </form>
+
+        {movementLookup && (
+          <div className="movement-lookup-result">
+            <div>
+              <span>Movimiento</span>
+              <strong>#{movementLookup.transaction_id}</strong>
+            </div>
+            <div>
+              <span>Nombre o empresa</span>
+              <strong>{movementLookup.counterparty_name}</strong>
+            </div>
+            <div>
+              <span>Concepto</span>
+              <strong>{movementLookup.concept_name}</strong>
+            </div>
+            <div>
+              <span>Usuario</span>
+              <strong>{movementLookup.full_name || movementLookup.username || "Sin usuario registrado"}</strong>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="panel-block">
+        <div className="block-heading">
+          <div>
+            <h2>Usuarios</h2>
+            <p>{isLoadingUsers ? "Cargando..." : `${users.length} usuarios`}</p>
+          </div>
+        </div>
+
+        {localError && (
+          <div className="alert alert-error" role="alert">
+            {localError}
+          </div>
+        )}
+        {localNotice && (
+          <div className="alert alert-success" role="status">
+            {localNotice}
+          </div>
+        )}
+
+        <form className="settings-form" onSubmit={saveUser}>
+          <label>
+            Usuario
+            <input value={form.username} onChange={(event) => updateField("username", event.target.value)} required />
+          </label>
+          <label>
+            Nombre completo
+            <input value={form.full_name} onChange={(event) => updateField("full_name", event.target.value)} />
+          </label>
+          <label>
+            Contraseña
+            <input
+              type="password"
+              value={form.password}
+              onChange={(event) => updateField("password", event.target.value)}
+              required={!editingUser}
+            />
+          </label>
+          <div className="settings-options">
+            <label className="checkbox-field">
+              <input
+                type="checkbox"
+                checked={form.is_admin}
+                onChange={(event) => updateField("is_admin", event.target.checked)}
+              />
+              Administrador
+            </label>
+            <label className="checkbox-field">
+              <input
+                type="checkbox"
+                checked={form.is_active}
+                onChange={(event) => updateField("is_active", event.target.checked)}
+              />
+              Activo
+            </label>
+          </div>
+          <button className="primary-button submit-button" type="submit" disabled={isCreatingUser}>
+            {editingUser ? <Save size={18} /> : <Plus size={18} />}
+            {isCreatingUser ? "Guardando..." : editingUser ? "Guardar usuario" : "Crear usuario"}
+          </button>
+          {editingUser && (
+            <button className="ghost-button" type="button" onClick={cancelUserEdit}>
+              <X size={18} />
+              Cancelar
+            </button>
+          )}
+        </form>
+
+        <div className="table-wrap users-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Usuario</th>
+                <th>Nombre</th>
+                <th>Rol</th>
+                <th>Estado</th>
+                <th className="actions-cell">Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((user) => (
+                <tr key={user.id}>
+                  <td>{user.username}</td>
+                  <td>{user.full_name || "Sin indicar"}</td>
+                  <td>{user.is_admin ? "Administrador" : "Usuario"}</td>
+                  <td>{user.is_active ? "Activo" : "Inactivo"}</td>
+                  <td className="actions-cell">
+                    <button className="icon-button" type="button" onClick={() => startEditUser(user)} title="Editar">
+                      <Pencil size={17} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
   );
 }
 

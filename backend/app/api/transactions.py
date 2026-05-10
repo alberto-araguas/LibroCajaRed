@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import Select, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.api.auth import require_active_user
 from app.db.session import get_db
-from app.models import Account, Concept, Counterparty, Transaction, TransactionType
+from app.models import Account, Concept, Counterparty, Transaction, TransactionType, User
 from app.schemas.transaction import TransactionCreate, TransactionRead, TransactionUpdate
 from app.services.normalization import normalize_name
 
@@ -17,6 +18,7 @@ def _transaction_options() -> tuple:
         selectinload(Transaction.account),
         selectinload(Transaction.counterparty),
         selectinload(Transaction.concept),
+        selectinload(Transaction.created_by),
     )
 
 
@@ -152,6 +154,7 @@ def list_transactions(
 def create_transaction(
     payload: TransactionCreate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_active_user),
 ) -> Transaction:
     account = _get_account(payload.account_id, payload.account_code, db)
     counterparty = _get_or_create_counterparty(payload.counterparty_name, db)
@@ -161,6 +164,7 @@ def create_transaction(
         account_id=account.id,
         counterparty_id=counterparty.id,
         concept_id=concept.id,
+        created_by_user_id=current_user.id,
         type=payload.type.value,
         amount=payload.amount,
         transaction_date=payload.transaction_date,

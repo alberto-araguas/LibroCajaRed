@@ -28,6 +28,11 @@ class Transaction(Base):
         nullable=False,
     )
     concept_id: Mapped[int] = mapped_column(ForeignKey("concepts.id"), index=True, nullable=False)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"),
+        index=True,
+        nullable=True,
+    )
     type: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     transaction_date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
@@ -43,3 +48,4 @@ class Transaction(Base):
     account: Mapped["Account"] = relationship(back_populates="transactions")
     counterparty: Mapped["Counterparty"] = relationship(back_populates="transactions")
     concept: Mapped["Concept"] = relationship(back_populates="transactions")
+    created_by: Mapped["User | None"] = relationship(back_populates="created_transactions")
