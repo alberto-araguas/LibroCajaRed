@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     smtp_from: str = ""
     smtp_starttls: bool = True
     smtp_timeout: int = 30
+    report_company_name: str = "Libro de Caja"
+    report_logo_path: str = ""
+    report_privacy_footer: str = (
+        "Información tratada conforme a la normativa vigente de protección de datos. "
+        "Este documento es confidencial y está destinado únicamente a su receptor."
+    )
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

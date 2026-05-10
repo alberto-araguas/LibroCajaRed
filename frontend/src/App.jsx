@@ -84,6 +84,7 @@ function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [isSendingEmail, setIsSendingEmail] = useState(false);
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
+  const [emailReport, setEmailReport] = useState({ type: "cashbook", transactionId: null });
   const [emailForm, setEmailForm] = useState({
     recipient: "",
     subject: "Libro de caja",
@@ -247,23 +248,55 @@ function App() {
     window.open(api.cashbookPdfUrl(filters), "_blank", "noopener,noreferrer");
   }
 
+  function printMovementReport(transactionId) {
+    window.open(api.movementPdfUrl(transactionId, { download: false }), "_blank", "noopener,noreferrer");
+  }
+
+  function exportMovementPdf(transactionId) {
+    window.open(api.movementPdfUrl(transactionId), "_blank", "noopener,noreferrer");
+  }
+
+  function openCashbookEmailDialog() {
+    setEmailReport({ type: "cashbook", transactionId: null });
+    setEmailForm({
+      recipient: "",
+      subject: "Libro de caja",
+      message: "Adjunto encontrarás el informe del libro de caja en PDF.",
+    });
+    setEmailDialogOpen(true);
+  }
+
+  function openMovementEmailDialog(transactionId) {
+    setEmailReport({ type: "movement", transactionId });
+    setEmailForm({
+      recipient: "",
+      subject: `Informe de movimiento ${transactionId}`,
+      message: "Adjunto encontrarás el informe del movimiento en PDF.",
+    });
+    setEmailDialogOpen(true);
+  }
+
   function updateEmailForm(field, value) {
     setEmailForm((current) => ({ ...current, [field]: value }));
   }
 
-  async function sendCashbookEmail(event) {
+  async function sendReportEmail(event) {
     event.preventDefault();
     setIsSendingEmail(true);
     setError("");
     setNotice("");
-    const emailFilters = Object.fromEntries(
-      Object.entries(filters).filter(([, value]) => value !== undefined && value !== null && value !== ""),
-    );
     try {
-      await api.emailCashbookReport({
-        ...emailForm,
-        filters: emailFilters,
-      });
+      if (emailReport.type === "movement") {
+        await api.emailMovementReport(emailReport.transactionId, emailForm);
+      } else {
+        const emailFilters = Object.fromEntries(
+          Object.entries(filters).filter(([, value]) => value !== undefined && value !== null && value !== ""),
+        );
+        await api.emailCashbookReport({
+          ...emailForm,
+          filters: emailFilters,
+        });
+      }
       setEmailDialogOpen(false);
       setNotice("Informe enviado por email.");
     } catch (err) {
@@ -341,7 +374,10 @@ function App() {
             deleteTransaction={deleteTransaction}
             printCashbook={printCashbook}
             exportCashbookPdf={exportCashbookPdf}
-            openEmailDialog={() => setEmailDialogOpen(true)}
+            printMovementReport={printMovementReport}
+            exportMovementPdf={exportMovementPdf}
+            openCashbookEmailDialog={openCashbookEmailDialog}
+            openMovementEmailDialog={openMovementEmailDialog}
           />
         )}
 
@@ -370,9 +406,10 @@ function App() {
         {emailDialogOpen && (
           <EmailDialog
             emailForm={emailForm}
+            emailReport={emailReport}
             isSendingEmail={isSendingEmail}
             updateEmailForm={updateEmailForm}
-            sendCashbookEmail={sendCashbookEmail}
+            sendReportEmail={sendReportEmail}
             close={() => setEmailDialogOpen(false)}
           />
         )}
@@ -469,6 +506,8 @@ function BalanceCard({ label, value, tone }) {
 }
 
 function Cashbook(props) {
+  const hasSavedMovement = Boolean(props.editingId);
+
   return (
     <div className="cashbook-layout">
       <section className="panel-block cashbook-movement-panel">
@@ -478,15 +517,33 @@ function Cashbook(props) {
             <p>Saldo efectivo: {formatMoney(props.balances.cash?.balance)}</p>
           </div>
           <div className="report-actions movement-actions">
-            <button className="ghost-button" type="button" disabled title="Pendiente de configurar">
+            <button
+              className="ghost-button"
+              type="button"
+              disabled={!hasSavedMovement}
+              onClick={() => props.printMovementReport(props.editingId)}
+              title={hasSavedMovement ? "Abrir informe del movimiento" : "Guarda o selecciona un movimiento"}
+            >
               <Printer size={18} />
               Imprimir
             </button>
-            <button className="primary-button" type="button" disabled title="Pendiente de configurar">
+            <button
+              className="primary-button"
+              type="button"
+              disabled={!hasSavedMovement}
+              onClick={() => props.exportMovementPdf(props.editingId)}
+              title={hasSavedMovement ? "Exportar informe del movimiento" : "Guarda o selecciona un movimiento"}
+            >
               <FileDown size={18} />
               Exportar PDF
             </button>
-            <button className="primary-button" type="button" disabled title="Pendiente de configurar">
+            <button
+              className="primary-button"
+              type="button"
+              disabled={!hasSavedMovement}
+              onClick={() => props.openMovementEmailDialog(props.editingId)}
+              title={hasSavedMovement ? "Enviar informe del movimiento" : "Guarda o selecciona un movimiento"}
+            >
               <Mail size={18} />
               Enviar email
             </button>
@@ -526,7 +583,7 @@ function Cashbook(props) {
               <FileDown size={18} />
               Exportar PDF
             </button>
-            <button className="primary-button" type="button" onClick={props.openEmailDialog}>
+            <button className="primary-button" type="button" onClick={props.openCashbookEmailDialog}>
               <Mail size={18} />
               Enviar email
             </button>
@@ -1179,21 +1236,27 @@ function ReferenceManager({ title, singular, items, createItem, updateItem, dele
   );
 }
 
-function EmailDialog({ emailForm, isSendingEmail, updateEmailForm, sendCashbookEmail, close }) {
+function EmailDialog({ emailForm, emailReport, isSendingEmail, updateEmailForm, sendReportEmail, close }) {
+  const isMovementReport = emailReport.type === "movement";
+
   return (
     <div className="modal-backdrop" role="presentation">
       <section className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="email-title">
         <div className="block-heading">
           <div>
             <h2 id="email-title">Enviar informe</h2>
-            <p>Se adjuntará el PDF con los filtros actuales.</p>
+            <p>
+              {isMovementReport
+                ? "Se adjuntará el PDF del movimiento seleccionado."
+                : "Se adjuntará el PDF con los filtros actuales."}
+            </p>
           </div>
           <button className="icon-button" type="button" onClick={close} title="Cerrar">
             <X size={18} />
           </button>
         </div>
 
-        <form className="email-form" onSubmit={sendCashbookEmail}>
+        <form className="email-form" onSubmit={sendReportEmail}>
           <label>
             Destinatario
             <input

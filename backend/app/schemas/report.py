@@ -22,6 +22,12 @@ class CashbookEmailRequest(BaseModel):
     filters: CashbookReportFilters = Field(default_factory=CashbookReportFilters)
 
 
+class MovementEmailRequest(BaseModel):
+    recipient: EmailStr
+    subject: str = Field(default="Informe de movimiento", min_length=1, max_length=180)
+    message: str | None = Field(default=None, max_length=2000)
+
+
 class EmailReportResponse(BaseModel):
     status: str
     detail: str

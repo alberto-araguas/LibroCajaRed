@@ -111,6 +111,40 @@ def test_pdf_report_is_generated(client: TestClient) -> None:
     assert len(response.content) > 1000
 
 
+def test_movement_pdf_report_is_generated(client: TestClient) -> None:
+    client.post(
+        "/counterparties",
+        json={
+            "name": "Empresa Informe",
+            "dni_cif": "B11122233",
+            "address": "Calle Informe 9",
+            "phone": "600999888",
+            "email": "informe@example.com",
+        },
+    )
+    client.post("/concepts", json={"name": "Servicio informe"})
+    transaction = client.post(
+        "/transactions",
+        json={
+            "account_code": "cash",
+            "counterparty_name": "Empresa Informe",
+            "concept_name": "Servicio informe",
+            "type": "income",
+            "amount": "75.25",
+            "transaction_date": "2026-05-10",
+            "notes": "Movimiento para informe individual.",
+        },
+    )
+    assert transaction.status_code == 201
+
+    response = client.get(f"/reports/movements/{transaction.json()['id']}/pdf")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF-")
+    assert len(response.content) > 1000
+
+
 def test_email_report_requires_smtp_config(client: TestClient) -> None:
     response = client.post(
         "/reports/cashbook/email",
@@ -119,6 +153,34 @@ def test_email_report_requires_smtp_config(client: TestClient) -> None:
             "subject": "Libro de caja",
             "message": "Informe de prueba",
             "filters": {},
+        },
+    )
+
+    assert response.status_code == 503
+    assert "SMTP no está configurado" in response.json()["detail"]
+
+
+def test_movement_email_report_requires_smtp_config(client: TestClient) -> None:
+    client.post("/counterparties", json={"name": "Empresa Email"})
+    client.post("/concepts", json={"name": "Servicio email"})
+    transaction = client.post(
+        "/transactions",
+        json={
+            "account_code": "cash",
+            "counterparty_name": "Empresa Email",
+            "concept_name": "Servicio email",
+            "type": "income",
+            "amount": "12.00",
+            "transaction_date": "2026-05-10",
+        },
+    )
+
+    response = client.post(
+        f"/reports/movements/{transaction.json()['id']}/email",
+        json={
+            "recipient": "destino@example.com",
+            "subject": "Movimiento",
+            "message": "Informe de prueba",
         },
     )
 

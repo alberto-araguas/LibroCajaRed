@@ -88,4 +88,10 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   cashbookPdfUrl: (filters) => `${API_URL}/reports/cashbook/pdf${buildQuery(filters)}`,
+  movementPdfUrl: (transactionId, params) => `${API_URL}/reports/movements/${transactionId}/pdf${buildQuery(params)}`,
+  emailMovementReport: (transactionId, payload) =>
+    request(`/reports/movements/${transactionId}/email`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 };

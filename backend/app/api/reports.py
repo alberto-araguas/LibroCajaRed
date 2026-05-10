@@ -1,15 +1,17 @@
-from datetime import date
+from datetime import date, datetime
 from email.message import EmailMessage
 from io import BytesIO
+from pathlib import Path
 import smtplib
 import ssl
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.pagesizes import A4, landscape, portrait
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
+from reportlab.lib.utils import simpleSplit
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from sqlalchemy import Select, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -17,7 +19,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
 from app.models import Account, Concept, Counterparty, Transaction, TransactionType
-from app.schemas.report import CashbookEmailRequest, EmailReportResponse
+from app.schemas.report import CashbookEmailRequest, EmailReportResponse, MovementEmailRequest
 from app.services.normalization import normalize_name
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -62,6 +64,32 @@ def _apply_report_filters(
 
 def _money(value) -> str:
     return f"{value:,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _format_optional(value: str | None) -> str:
+    return value or "Sin indicar"
+
+
+def _movement_type_label(transaction: Transaction) -> str:
+    return "Entrada" if transaction.type == TransactionType.INCOME.value else "Retirada"
+
+
+def _get_report_transaction(transaction_id: int, db: Session) -> Transaction:
+    transaction = db.scalar(
+        select(Transaction)
+        .options(
+            selectinload(Transaction.account),
+            selectinload(Transaction.counterparty),
+            selectinload(Transaction.concept),
+        )
+        .where(Transaction.id == transaction_id),
+    )
+    if transaction is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Movimiento no encontrado.",
+        )
+    return transaction
 
 
 def _filter_summary(
@@ -199,6 +227,160 @@ def _build_cashbook_pdf(
     return buffer.getvalue()
 
 
+def _draw_movement_header_footer(canvas, document, settings: Settings) -> None:
+    width, height = portrait(A4)
+    canvas.saveState()
+
+    header_y = height - 22 * mm
+    logo_size = 16 * mm
+    logo_x = document.leftMargin
+    logo_y = height - 24 * mm
+
+    if settings.report_logo_path and Path(settings.report_logo_path).exists():
+        canvas.drawImage(
+            settings.report_logo_path,
+            logo_x,
+            logo_y,
+            width=logo_size,
+            height=logo_size,
+            preserveAspectRatio=True,
+            mask="auto",
+        )
+    else:
+        canvas.setFillColor(colors.HexColor("#1976c9"))
+        canvas.roundRect(logo_x, logo_y, logo_size, logo_size, 3, fill=True, stroke=False)
+        canvas.setFillColor(colors.white)
+        canvas.setFont("Helvetica-Bold", 14)
+        canvas.drawCentredString(logo_x + logo_size / 2, logo_y + 5 * mm, "LC")
+
+    canvas.setFillColor(colors.HexColor("#12304c"))
+    canvas.setFont("Helvetica-Bold", 15)
+    canvas.drawString(logo_x + logo_size + 6 * mm, header_y, settings.report_company_name)
+    canvas.setFont("Helvetica", 8)
+    canvas.setFillColor(colors.HexColor("#4f6e89"))
+    canvas.drawString(
+        logo_x + logo_size + 6 * mm,
+        header_y - 5 * mm,
+        f"Informe emitido el {datetime.now().strftime('%d/%m/%Y %H:%M')}",
+    )
+
+    canvas.setStrokeColor(colors.HexColor("#c3d8ea"))
+    canvas.line(document.leftMargin, height - 31 * mm, width - document.rightMargin, height - 31 * mm)
+
+    footer_y = 17 * mm
+    canvas.line(document.leftMargin, footer_y + 9 * mm, width - document.rightMargin, footer_y + 9 * mm)
+    canvas.setFont("Helvetica", 7)
+    canvas.setFillColor(colors.HexColor("#4f6e89"))
+    text = canvas.beginText(document.leftMargin, footer_y + 3 * mm)
+    text.setLeading(8)
+    footer_width = width - document.leftMargin - document.rightMargin - 20 * mm
+    text.textLines(simpleSplit(settings.report_privacy_footer, "Helvetica", 7, footer_width))
+    canvas.drawText(text)
+    canvas.drawRightString(width - document.rightMargin, footer_y + 2 * mm, f"Página {document.page}")
+    canvas.restoreState()
+
+
+def _section_title(text: str, styles) -> Paragraph:
+    return Paragraph(text, styles["SectionHeading"])
+
+
+def _info_table(rows: list[tuple[str, str]], styles) -> Table:
+    data = [[Paragraph(label, styles["FieldLabel"]), Paragraph(value, styles["BodyText"])] for label, value in rows]
+    table = Table(data, colWidths=[42 * mm, 112 * mm])
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#e7f1fa")),
+                ("BACKGROUND", (1, 0), (1, -1), colors.white),
+                ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#12304c")),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#c3d8ea")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ],
+        ),
+    )
+    return table
+
+
+def _build_movement_pdf(transaction: Transaction, settings: Settings) -> bytes:
+    buffer = BytesIO()
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=portrait(A4),
+        rightMargin=22 * mm,
+        leftMargin=22 * mm,
+        topMargin=42 * mm,
+        bottomMargin=34 * mm,
+        title=f"Movimiento {transaction.id}",
+    )
+    styles = getSampleStyleSheet()
+    styles.add(
+        ParagraphStyle(
+            "SectionHeading",
+            parent=styles["Heading2"],
+            textColor=colors.HexColor("#0f5ea5"),
+            fontSize=11,
+            leading=14,
+            spaceBefore=8,
+            spaceAfter=7,
+        ),
+    )
+    styles.add(
+        ParagraphStyle(
+            "FieldLabel",
+            parent=styles["BodyText"],
+            textColor=colors.HexColor("#12304c"),
+            fontName="Helvetica-Bold",
+            fontSize=9,
+            leading=12,
+        ),
+    )
+
+    amount = _money(transaction.amount)
+    if transaction.type == TransactionType.EXPENSE.value:
+        amount = f"-{amount}"
+
+    story = [
+        Paragraph("Informe de movimiento", styles["Title"]),
+        Paragraph(f"Movimiento Nº {transaction.id}", styles["Normal"]),
+        Spacer(1, 9),
+        _section_title("Datos del movimiento", styles),
+        _info_table(
+            [
+                ("Fecha", transaction.transaction_date.strftime("%d/%m/%Y")),
+                ("Tipo", _movement_type_label(transaction)),
+                ("Cuenta", transaction.account.name),
+                ("Cantidad", amount),
+                ("Concepto", transaction.concept.name),
+                ("Notas", transaction.notes or "Sin notas"),
+            ],
+            styles,
+        ),
+        Spacer(1, 10),
+        _section_title("Nombre o empresa", styles),
+        _info_table(
+            [
+                ("Nombre", transaction.counterparty.name),
+                ("DNI/CIF", _format_optional(transaction.counterparty.dni_cif)),
+                ("Dirección", _format_optional(transaction.counterparty.address)),
+                ("Teléfono", _format_optional(transaction.counterparty.phone)),
+                ("Email", _format_optional(transaction.counterparty.email)),
+            ],
+            styles,
+        ),
+    ]
+
+    document.build(
+        story,
+        onFirstPage=lambda canvas, doc: _draw_movement_header_footer(canvas, doc, settings),
+        onLaterPages=lambda canvas, doc: _draw_movement_header_footer(canvas, doc, settings),
+    )
+    return buffer.getvalue()
+
+
 def _ensure_smtp_config(settings: Settings) -> None:
     if not settings.smtp_host or not settings.smtp_user or not settings.smtp_password:
         raise HTTPException(
@@ -216,6 +398,7 @@ def _send_office365_email(
     subject: str,
     body: str,
     pdf_bytes: bytes,
+    filename: str = "libro-de-caja.pdf",
 ) -> None:
     _ensure_smtp_config(settings)
 
@@ -229,7 +412,7 @@ def _send_office365_email(
         pdf_bytes,
         maintype="application",
         subtype="pdf",
-        filename="libro-de-caja.pdf",
+        filename=filename,
     )
 
     try:
@@ -291,6 +474,45 @@ def export_cashbook_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="libro-de-caja.pdf"'},
     )
+
+
+@router.get("/movements/{transaction_id}/pdf")
+def export_movement_pdf(
+    transaction_id: int,
+    download: bool = True,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    transaction = _get_report_transaction(transaction_id, db)
+    pdf_bytes = _build_movement_pdf(transaction, settings)
+    disposition = "attachment" if download else "inline"
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'{disposition}; filename="movimiento-{transaction.id}.pdf"'},
+    )
+
+
+@router.post("/movements/{transaction_id}/email", response_model=EmailReportResponse)
+def email_movement_report(
+    transaction_id: int,
+    payload: MovementEmailRequest,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> EmailReportResponse:
+    transaction = _get_report_transaction(transaction_id, db)
+    pdf_bytes = _build_movement_pdf(transaction, settings)
+    body = payload.message or "Adjunto encontrarás el informe del movimiento en PDF."
+    body = f"{body}\n\nMovimiento Nº {transaction.id}: {transaction.counterparty.name} - {transaction.concept.name}"
+    _send_office365_email(
+        settings,
+        str(payload.recipient),
+        payload.subject,
+        body,
+        pdf_bytes,
+        filename=f"movimiento-{transaction.id}.pdf",
+    )
+    return EmailReportResponse(status="ok", detail="Email enviado correctamente.")
 
 
 @router.post("/cashbook/email", response_model=EmailReportResponse)
