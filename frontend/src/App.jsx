@@ -35,6 +35,20 @@ const emptyForm = {
   notes: "",
 };
 
+function normalizeText(value) {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ");
+}
+
+function findReferenceByName(items, value) {
+  const normalizedValue = normalizeText(value);
+  return items.find((item) => normalizeText(item.name) === normalizedValue);
+}
+
 const moneyFormatter = new Intl.NumberFormat("es-ES", {
   style: "currency",
   currency: "EUR",
@@ -96,8 +110,8 @@ function App() {
           api.accounts(),
           api.balances(),
           api.transactions({ ...nextFilters, limit: 200 }),
-          api.counterparties({ limit: 200 }),
-          api.concepts({ limit: 200 }),
+          api.counterparties({ limit: 500 }),
+          api.concepts({ limit: 500 }),
         ]);
       setAccounts(accountsData);
       setBalances(balancesData);
@@ -168,8 +182,19 @@ function App() {
     setError("");
     setNotice("");
 
+    const selectedCounterparty = findReferenceByName(counterparties, form.counterparty_name);
+    const selectedConcept = findReferenceByName(concepts, form.concept_name);
+
+    if (!selectedCounterparty || !selectedConcept) {
+      setError("Selecciona un nombre o empresa y un concepto existentes.");
+      setIsSaving(false);
+      return;
+    }
+
     const payload = {
       ...form,
+      counterparty_name: selectedCounterparty.name,
+      concept_name: selectedConcept.name,
       amount: String(form.amount).replace(",", "."),
       notes: form.notes.trim() || null,
     };
@@ -597,32 +622,24 @@ function TransactionForm({
 
         <label className="movement-wide-field">
           Nombre o empresa
-          <input
-            list="counterparties-list"
+          <ReferenceAutocomplete
+            items={counterparties}
             value={form.counterparty_name}
-            onChange={(event) => updateForm("counterparty_name", event.target.value)}
+            onChange={(value) => updateForm("counterparty_name", value)}
+            placeholder="Busca un nombre o empresa"
             required
           />
-          <datalist id="counterparties-list">
-            {counterparties.map((item) => (
-              <option key={item.id} value={item.name} />
-            ))}
-          </datalist>
         </label>
 
         <label className="movement-wide-field">
           Concepto
-          <input
-            list="concepts-list"
+          <ReferenceAutocomplete
+            items={concepts}
             value={form.concept_name}
-            onChange={(event) => updateForm("concept_name", event.target.value)}
+            onChange={(value) => updateForm("concept_name", value)}
+            placeholder="Busca un concepto"
             required
           />
-          <datalist id="concepts-list">
-            {concepts.map((item) => (
-              <option key={item.id} value={item.name} />
-            ))}
-          </datalist>
         </label>
 
         <label className="full-field">
@@ -636,6 +653,120 @@ function TransactionForm({
         {editingId ? "Guardar cambios" : "Crear movimiento"}
       </button>
     </form>
+  );
+}
+
+function scoreReference(item, query) {
+  const normalizedName = normalizeText(item.name);
+  const normalizedQuery = normalizeText(query);
+
+  if (!normalizedQuery) {
+    return 0;
+  }
+  if (normalizedName === normalizedQuery) {
+    return 1000;
+  }
+  if (normalizedName.startsWith(normalizedQuery)) {
+    return 800 - normalizedName.length;
+  }
+  if (normalizedName.includes(normalizedQuery)) {
+    return 600 - normalizedName.indexOf(normalizedQuery);
+  }
+
+  const words = normalizedQuery.split(" ");
+  if (words.every((word) => normalizedName.includes(word))) {
+    return 400 - normalizedName.length;
+  }
+
+  return -1;
+}
+
+function getReferenceMatches(items, query) {
+  return items
+    .map((item) => ({ item, score: scoreReference(item, query) }))
+    .filter(({ score }) => score >= 0)
+    .sort((left, right) => right.score - left.score || left.item.name.localeCompare(right.item.name))
+    .slice(0, 8)
+    .map(({ item }) => item);
+}
+
+function ReferenceAutocomplete({ items, value, onChange, placeholder, required = false }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const matches = useMemo(() => getReferenceMatches(items, value), [items, value]);
+  const hasExactMatch = Boolean(findReferenceByName(items, value));
+  const showValidation = value.trim() !== "" && !hasExactMatch;
+
+  function selectItem(item) {
+    onChange(item.name);
+    setIsOpen(false);
+    setHighlightedIndex(0);
+  }
+
+  function updateValue(nextValue) {
+    onChange(nextValue);
+    setIsOpen(true);
+    setHighlightedIndex(0);
+  }
+
+  function handleKeyDown(event) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setIsOpen(true);
+      setHighlightedIndex((current) => Math.min(current + 1, Math.max(matches.length - 1, 0)));
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setHighlightedIndex((current) => Math.max(current - 1, 0));
+    }
+
+    if (event.key === "Enter" && isOpen && matches[highlightedIndex]) {
+      event.preventDefault();
+      selectItem(matches[highlightedIndex]);
+    }
+
+    if (event.key === "Escape") {
+      setIsOpen(false);
+    }
+  }
+
+  return (
+    <div className="reference-autocomplete">
+      <input
+        aria-invalid={showValidation}
+        autoComplete="off"
+        className={showValidation ? "invalid" : ""}
+        onBlur={() => window.setTimeout(() => setIsOpen(false), 120)}
+        onChange={(event) => updateValue(event.target.value)}
+        onFocus={() => setIsOpen(true)}
+        onKeyDown={handleKeyDown}
+        placeholder={placeholder}
+        required={required}
+        value={value}
+      />
+      {isOpen && (
+        <div className="autocomplete-menu" role="listbox">
+          {matches.length > 0 ? (
+            matches.map((item, index) => (
+              <button
+                className={index === highlightedIndex ? "highlighted" : ""}
+                key={item.id}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => selectItem(item)}
+                role="option"
+                type="button"
+              >
+                {item.name}
+              </button>
+            ))
+          ) : (
+            <div className="autocomplete-empty">Sin coincidencias</div>
+          )}
+        </div>
+      )}
+      {showValidation && <span className="field-hint">Debe coincidir con un registro existente.</span>}
+    </div>
   );
 }
 
